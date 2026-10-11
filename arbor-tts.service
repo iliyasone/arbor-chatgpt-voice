@@ -1,0 +1,12 @@
+[Unit]
+Description=Arbor (ChatGPT Read Aloud) TTS, OpenAI-compatible /v1/audio/speech
+After=network-online.target
+
+[Service]
+ExecStart=/root/.local/bin/uv run -q /path/to/arbor-chatgpt-voice/arbor_tts.py
+Environment=PORT=8811
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
