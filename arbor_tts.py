@@ -84,6 +84,8 @@ class ChatGPT:
         r = await self.s.post(B + "/backend-api/sentinel/chat-requirements",
                               headers=self.h(**{"Content-Type": "application/json"}), json={"p": p})
         j = r.json()
+        if "token" not in j:
+            raise RuntimeError(f"chat-requirements {r.status_code}: {r.text[:300]}")
         hd = {"openai-sentinel-chat-requirements-token": j["token"]}
         pw = j.get("proofofwork") or {}
         if pw.get("required"):
@@ -164,6 +166,13 @@ async def speech(req: Request):
     if not text or fmt not in FORMATS:
         return JSONResponse({"error": f"need input; response_format one of {sorted(FORMATS)}"}, 400)
     jobs = [asyncio.create_task(gpt.prepare(p)) for p in chunks(text)]
+    try:  # fail with an error status before the 200 goes out, not with a cut stream
+        await asyncio.shield(jobs[0])
+    except Exception as e:
+        for job in jobs:
+            job.cancel()
+        log.error("speech failed: %s", e)
+        return JSONResponse({"error": str(e)}, 502)
 
     async def stream():
         try:
