@@ -56,8 +56,10 @@ total.
    or install `arbor-tts.service` as a systemd unit.
 
 The access token lives 10 days; the session lasts 90 days and slides forward on every refresh. The
-server refreshes it every 12 hours and writes the rotated cookies back to the creds file, so it
-keeps working as long as it runs at least once in a while.
+server refreshes the session every 12 hours and writes the rotated cookies back to the creds file,
+so it keeps working as long as it runs at least once in a while. ChatGPT hands out a new access
+token only after the old one has expired, so the server also refreshes right after expiry and
+before any request that finds the token expired.
 
 ## API
 

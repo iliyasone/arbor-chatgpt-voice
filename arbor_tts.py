@@ -37,6 +37,7 @@ class ChatGPT:
         for k, v in self.c.get("cookies", {"__Secure-next-auth.session-token": self.c.get("s")}).items():
             self.s.cookies.set(k, v, domain="chatgpt.com")
         self.sem = asyncio.Semaphore(2)
+        self.lock = asyncio.Lock()
 
     def save(self):
         self.c["cookies"] = {c.name: c.value for c in self.s.cookies.jar if "chatgpt.com" in c.domain}
@@ -48,6 +49,13 @@ class ChatGPT:
     def token_days_left(self):
         p = json.loads(base64.urlsafe_b64decode(self.c["a"].split(".")[1] + "=="))
         return (p["exp"] - time.time()) / 86400
+
+    async def ensure_token(self):
+        """/api/auth/session keeps returning the old access token until it expires, so the
+        12-hour refresher can't renew it in advance: renew it here once it has run out."""
+        async with self.lock:
+            if self.token_days_left() < 60 / 86400:
+                await self.refresh()
 
     async def refresh(self):
         r = await self.s.get(B + "/api/auth/session", headers={"Referer": B + "/"})
@@ -165,6 +173,11 @@ async def speech(req: Request):
     fmt = j.get("response_format", "mp3")
     if not text or fmt not in FORMATS:
         return JSONResponse({"error": f"need input; response_format one of {sorted(FORMATS)}"}, 400)
+    try:
+        await gpt.ensure_token()
+    except Exception as e:
+        log.error("speech failed: %s", e)
+        return JSONResponse({"error": str(e)}, 502)
     jobs = [asyncio.create_task(gpt.prepare(p)) for p in chunks(text)]
     try:  # fail with an error status before the 200 goes out, not with a cut stream
         await asyncio.shield(jobs[0])
@@ -201,7 +214,8 @@ async def refresher():
             await gpt.refresh()
         except Exception:
             log.exception("refresh")
-        await asyncio.sleep(12 * 3600)
+        # wake up right after the token expires: that's when a new one is issued
+        await asyncio.sleep(max(60, min(12 * 3600, gpt.token_days_left() * 86400 + 60)))
 
 
 @contextlib.asynccontextmanager
