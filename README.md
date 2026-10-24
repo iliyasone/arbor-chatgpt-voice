@@ -18,6 +18,9 @@ curl localhost:8811/v1/audio/speech -H 'Content-Type: application/json' \
 
 The response is a streamed MP3, so any OpenAI client works if you point `base_url` at it.
 
+It powers [t3-code-voice-skill](https://github.com/iliyasone/t3-code-voice-skill): coding agents
+in T3 Code that answer out loud.
+
 ## How it works
 
 ChatGPT only voices *assistant* messages, through
