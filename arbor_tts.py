@@ -8,7 +8,7 @@ ChatGPT only voices assistant messages, so every chunk of text is sent to a thro
 with a "repeat verbatim" prompt, the reply is synthesized with /backend-api/synthesize and
 the chat is deleted. No browser: TLS is impersonated with curl_cffi, proof-of-work is solved here.
 
-    POST /v1/audio/speech  {"input": "...", "voice": "arbor", "response_format": "mp3"}
+    POST /v1/audio/speech  {"input": "...", "voice": "arbor", "response_format": "mp3", "spell_numbers": false}
 """
 import asyncio, base64, contextlib, hashlib, json, logging, os, random, re, time, uuid
 from curl_cffi.requests import AsyncSession
@@ -25,6 +25,19 @@ FORMATS = {"mp3", "aac", "opus"}
 CHUNK = 1200
 PROMPT = ("Повтори дословно, без изменений и без комментариев, текст между тегами. "
           "Выведи только сам текст.\n<text>\n{}\n</text>")
+# Read Aloud stumbles over digits ("0.1.2", "24.10", "№ 482", "1."), so with spell_numbers the chat
+# rewrites them as words first; the rest of the text stays as it is.
+SPELL_PROMPT = ("Перепиши текст между тегами для чтения вслух. Каждое число и символ рядом с числом запиши "
+                "словами так, как их естественно сказал бы человек вслух, в правильном роде и падеже. Примеры: "
+                "«15 мин» — «пятнадцать минут»; «1. Названия» — «Первое. Названия»; «22.10» — «двадцать второе "
+                "октября»; «в 21:00» — «в девять вечера»; «2,5–3 кВт» — «два с половиной — три киловатта»; "
+                "«7500 ₽» — «семь с половиной тысяч рублей»; «PR #440» — «PR четыреста сорок»; версия «0.1.2» — "
+                "«ноль один два»; «Opus 5.5» — «Opus пять и пять»; видеокарта «3070» — «тридцать семьдесят»; "
+                "«~1800px» — «около тысячи восьмисот пикселей»; длинный код «912300121» — «девять один два, "
+                "триста, сто двадцать один». Всё остальное оставь слово в слово: ничего не добавляй, не убирай, "
+                "не переводи и не транслитерируй. Чисел цифрами в ответе остаться не должно, только цифры внутри "
+                "названий вроде t3-voice или Qwen3. Выведи только сам текст."
+                "\n<text>\n{}\n</text>")
 log = logging.getLogger("arbor")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -100,11 +113,11 @@ class ChatGPT:
             hd["openai-sentinel-proof-token"] = "gAAAAAB" + await asyncio.to_thread(self._solve, pw["seed"], pw["difficulty"])
         return hd
 
-    async def _ask(self, text):
+    async def _ask(self, text, prompt):
         hd = self.h(**{"Content-Type": "application/json", "Accept": "text/event-stream"}, **await self._requirements())
         body = {"action": "next", "parent_message_id": "client-created-root", "model": "auto",
                 "messages": [{"id": str(uuid.uuid4()), "author": {"role": "user"}, "create_time": time.time(),
-                              "content": {"content_type": "text", "parts": [PROMPT.format(text)]}, "metadata": {}}],
+                              "content": {"content_type": "text", "parts": [prompt.format(text)]}, "metadata": {}}],
                 "timezone_offset_min": -180, "conversation_mode": {"kind": "primary_assistant"},
                 "force_paragen": False, "supports_buffering": True, "system_hints": []}
         r = await self.s.post(B + "/backend-api/f/conversation", headers=hd, json=body)
@@ -122,14 +135,17 @@ class ChatGPT:
             raise RuntimeError("no assistant reply")
         return cid, *replies[-1]
 
-    async def prepare(self, text):
-        """Create an assistant message that says `text`; returns (conversation_id, message_id)."""
+    async def prepare(self, text, spell_numbers=False):
+        """Create an assistant message that says `text`; returns (conversation_id, message_id).
+        With spell_numbers the message is `text` with its numbers written as words."""
         async with self.sem:
             for attempt in range(2):
-                cid, mid, said = await self._ask(text)
-                if norm(said) == norm(text) or attempt:
-                    if norm(said) != norm(text):
-                        log.warning("not verbatim: %r -> %r", text[:80], said[:80])
+                cid, mid, said = await self._ask(text, SPELL_PROMPT if spell_numbers else PROMPT)
+                ok = spelled(said, text) if spell_numbers else norm(said) == norm(text)
+                if ok or attempt:
+                    if not ok:
+                        log.warning("not %s: %r -> %r", "spelled" if spell_numbers else "verbatim",
+                                    text[:80], said[:80])
                     return cid, mid
                 await self.delete(cid)
 
@@ -148,6 +164,18 @@ class ChatGPT:
 
 def norm(t):
     return re.sub(r"\s+", " ", t).strip().strip("«»\"").strip()
+
+
+def letters(t):
+    return re.sub(r"[^a-zа-яё]", "", t.lower())
+
+
+def spelled(said, text):
+    """A rewrite keeps every word of `text`, only grows where numbers became words and has no bare
+    numbers left (digits inside names like t3-voice or Qwen3 may stay)."""
+    words = letters(re.sub(r"\S*\d\S*", " ", text))
+    bare = re.search(r"(?<![a-zа-яё])\d+(?![a-zа-яё\d])", said, re.I)
+    return not bare and len(words) * 0.9 <= len(letters(said)) <= len(letters(text)) + 40 * len(re.findall(r"\d+", text)) + 20
 
 
 def chunks(text):
@@ -171,6 +199,7 @@ async def speech(req: Request):
     text = (j.get("input") or "").strip()
     voice = VOICES.get(j.get("voice", "arbor"), j.get("voice", "fathom"))
     fmt = j.get("response_format", "mp3")
+    spell = bool(j.get("spell_numbers"))
     if not text or fmt not in FORMATS:
         return JSONResponse({"error": f"need input; response_format one of {sorted(FORMATS)}"}, 400)
     try:
@@ -178,7 +207,7 @@ async def speech(req: Request):
     except Exception as e:
         log.error("speech failed: %s", e)
         return JSONResponse({"error": str(e)}, 502)
-    jobs = [asyncio.create_task(gpt.prepare(p)) for p in chunks(text)]
+    jobs = [asyncio.create_task(gpt.prepare(p, spell)) for p in chunks(text)]
     try:  # fail with an error status before the 200 goes out, not with a cut stream
         await asyncio.shield(jobs[0])
     except Exception as e:

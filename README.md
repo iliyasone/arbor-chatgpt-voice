@@ -72,6 +72,10 @@ before any request that finds the token expired.
 - `voice`: `arbor` (default), `spruce`, `sol`, or any internal ChatGPT voice id (`vale`, `breeze`,
   `cove`, `juniper`, `ember`, `maple`).
 - `response_format`: `mp3` (default), `aac`, `opus`.
+- `spell_numbers`: `false` by default. Read Aloud reads digits badly (versions, dates, list numbers,
+  long codes), so with `true` the chat rewrites every number as words first ("22.10" becomes
+  "двадцать второе октября", "1." becomes "Первое."), keeping the rest of the text word for word.
+  The prompt is Russian; it adds no latency, since the chat turn happens anyway.
 
 `GET /health` returns how many days the access token has left.
 
