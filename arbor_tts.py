@@ -10,7 +10,7 @@ the chat is deleted. No browser: TLS is impersonated with curl_cffi, proof-of-wo
 
     POST /v1/audio/speech  {"input": "...", "voice": "arbor", "response_format": "mp3", "spell_numbers": false}
 """
-import asyncio, base64, contextlib, hashlib, json, logging, os, random, re, time, uuid
+import asyncio, base64, contextlib, hashlib, json, logging, os, random, re, sys, time, uuid
 from curl_cffi.requests import AsyncSession
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -248,13 +248,24 @@ async def refresher():
         await asyncio.sleep(max(60, min(12 * 3600, gpt.token_days_left() * 86400 + 60)))
 
 
+async def watchdog():
+    # `uv run` keeps this script's environment in uv's cache; when the cache is cleaned under a
+    # running service every request fails (curl: CA bundle missing). Exit so systemd restarts us
+    # and uv rebuilds the environment.
+    while os.path.isdir(sys.prefix):
+        await asyncio.sleep(60)
+    log.error("environment %s is gone (uv cache cleaned?), exiting to be restarted", sys.prefix)
+    os._exit(1)
+
+
 @contextlib.asynccontextmanager
 async def lifespan(app):
     global gpt
     gpt = ChatGPT()
-    task = asyncio.create_task(refresher())
+    tasks = [asyncio.create_task(refresher()), asyncio.create_task(watchdog())]
     yield
-    task.cancel()
+    for task in tasks:
+        task.cancel()
 
 
 app = Starlette(routes=[Route("/v1/audio/speech", speech, methods=["POST"]), Route("/health", health)],
