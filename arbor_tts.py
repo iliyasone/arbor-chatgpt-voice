@@ -27,17 +27,19 @@ PROMPT = ("Повтори дословно, без изменений и без 
           "Выведи только сам текст.\n<text>\n{}\n</text>")
 # Read Aloud stumbles over digits ("0.1.2", "24.10", "№ 482", "1."), so with spell_numbers the chat
 # rewrites them as words first; the rest of the text stays as it is.
-SPELL_PROMPT = ("Повтори дословно, без изменений и без комментариев, текст между тегами. Не переформулируй, "
-                "не пропускай предложения, ничего не добавляй и не переводи. Единственное исключение: запиши "
-                "словами, в правильном роде и падеже, каждое число и каждый знак валюты или единицы, даже если "
-                "рядом нет числа (₽, $, €, %, №, ~). Примеры: «15 мин» — «пятнадцать минут»; «1. Названия» — "
-                "«Первое. Названия»; «22.10» — «двадцать второе октября»; «в 21:00» — «в девять вечера»; "
-                "«2,5–3 кВт» — «два с половиной — три киловатта»; «7500 ₽» — «семь с половиной тысяч рублей»; "
-                "«знак ₽» — «знак рубля»; «PR #440» — «PR четыреста сорок»; версия «0.1.2» — «ноль один два»; "
-                "«Opus 5.5» — «Opus пять и пять»; видеокарта «3070» — «тридцать семьдесят»; «~1800px» — «около "
-                "тысячи восьмисот пикселей»; длинный код «912300121» — «девять один два, триста, сто двадцать один». "
-                "Чисел цифрами в ответе остаться не должно, только цифры внутри названий вроде t3-voice или Qwen3. "
-                "Выведи только сам текст."
+SPELL_PROMPT = ("Repeat the text between the tags verbatim, without changes or comments. Do not rephrase, skip "
+                "sentences, add anything or translate. The only exception: write out as words every number and "
+                "every currency or unit sign, even with no number next to it (₽, $, €, %, №, ~). Write them in "
+                "the language of the surrounding sentence: numbers in an English sentence become English words, "
+                "in a Russian one Russian words in the right gender and case. English examples: \"15 min\" — "
+                "\"fifteen minutes\"; \"at 14:30\" — \"at two thirty pm\"; \"$5\" — \"five dollars\"; "
+                "\"PR #440\" — \"PR four hundred forty\"; version \"0.1.2\" — \"zero one two\". Russian examples: "
+                "«1. Названия» — «Первое. Названия»; «22.10» — «двадцать второе октября»; «в 21:00» — «в девять "
+                "вечера»; «2,5–3 кВт» — «два с половиной — три киловатта»; «7500 ₽» — «семь с половиной тысяч "
+                "рублей»; «знак ₽» — «знак рубля»; «Opus 5.5» — «Opus пять и пять»; видеокарта «3070» — "
+                "«тридцать семьдесят»; «~1800px» — «около тысячи восьмисот пикселей»; длинный код «912300121» — "
+                "«девять один два, триста, сто двадцать один». No numbers in digits may remain, only digits "
+                "inside names like t3-voice or Qwen3. Output only the text itself."
                 "\n<text>\n{}\n</text>")
 log = logging.getLogger("arbor")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -147,8 +149,12 @@ class ChatGPT:
                     if not ok:
                         log.warning("not %s: %r -> %r", "spelled" if spell_numbers else "verbatim",
                                     text[:80], said[:80])
-                    return cid, mid
+                    if not (spell_numbers and russified(said, text)):
+                        return cid, mid
                 await self.delete(cid)
+            # English text came back with Russian in it twice: read it as written instead
+            cid, mid, _ = await self._ask(text, PROMPT)
+            return cid, mid
 
     async def synth(self, cid, mid, voice, fmt):
         url = f"{B}/backend-api/synthesize?message_id={mid}&conversation_id={cid}&voice={voice}&format={fmt}"
@@ -172,11 +178,16 @@ def letters(t):
 
 
 def spelled(said, text):
-    """A rewrite keeps every word of `text`, only grows where numbers became words and has no bare
-    numbers left (digits inside names like t3-voice or Qwen3 may stay)."""
+    """A rewrite keeps every word of `text`, only grows where numbers became words, has no bare
+    numbers left (digits inside names like t3-voice or Qwen3 may stay) and adds no Russian to English."""
     words = letters(re.sub(r"\S*\d\S*", " ", text))
     bare = re.search(r"(?<![a-zа-яё])\d+(?![a-zа-яё\d])", said, re.I)
-    return not bare and len(words) * 0.9 <= len(letters(said)) <= len(letters(text)) + 40 * len(re.findall(r"\d+", text)) + 20
+    return not bare and not russified(said, text) and len(words) * 0.9 <= len(letters(said)) <= len(letters(text)) + 40 * len(re.findall(r"\d+", text)) + 20
+
+
+def russified(said, text):
+    """The chat sometimes writes the numbers of an English text in Russian, and the voice switches to Russian."""
+    return not re.search(r"[а-яё]", text, re.I) and bool(re.search(r"[а-яё]", said, re.I))
 
 
 def chunks(text):
