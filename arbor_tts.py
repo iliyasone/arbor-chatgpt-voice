@@ -49,7 +49,9 @@ class ChatGPT:
     def __init__(self):
         self.c = json.load(open(CRED))
         self.c.setdefault("dev", str(uuid.uuid4()))
-        self.s = AsyncSession(impersonate="chrome", timeout=120)
+        # Cloudflare challenges some fingerprints (curl_cffi's default "chrome" = 131, and 152 since
+        # 2026-11-14); /api/auth/session then answers an HTML page. Pin one that passes.
+        self.s = AsyncSession(impersonate="chrome151", timeout=120)
         for k, v in self.c.get("cookies", {"__Secure-next-auth.session-token": self.c.get("s")}).items():
             self.s.cookies.set(k, v, domain="chatgpt.com")
         self.sem = asyncio.Semaphore(2)
@@ -75,6 +77,8 @@ class ChatGPT:
 
     async def refresh(self):
         r = await self.s.get(B + "/api/auth/session", headers={"Referer": B + "/"})
+        if "json" not in r.headers.get("content-type", ""):
+            raise RuntimeError(f"session refresh failed: {r.status_code} {r.headers.get('cf-mitigated') or r.text[:200]}")
         j = r.json()
         if not j.get("accessToken"):
             raise RuntimeError(f"session refresh failed: {r.status_code} {str(j)[:200]}")
