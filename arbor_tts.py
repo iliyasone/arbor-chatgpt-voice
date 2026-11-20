@@ -41,6 +41,7 @@ SPELL_PROMPT = ("Repeat the text between the tags verbatim, without changes or c
                 "«девять один два, триста, сто двадцать один». No numbers in digits may remain, only digits "
                 "inside names like t3-voice or Qwen3. Output only the text itself."
                 "\n<text>\n{}\n</text>")
+CHAT_LOG = os.path.expanduser("~/.local/share/arbor-tts/chats.jsonl")
 log = logging.getLogger("arbor")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -149,6 +150,7 @@ class ChatGPT:
             for attempt in range(2):
                 cid, mid, said = await self._ask(text, SPELL_PROMPT if spell_numbers else PROMPT)
                 ok = spelled(said, text) if spell_numbers else norm(said) == norm(text)
+                log_chat(text, said, ok, spell_numbers, attempt)
                 if ok or attempt:
                     if not ok:
                         log.warning("not %s: %r -> %r", "spelled" if spell_numbers else "verbatim",
@@ -171,6 +173,18 @@ class ChatGPT:
     async def delete(self, cid):
         await self.s.patch(f"{B}/backend-api/conversation/{cid}",
                            headers=self.h(**{"Content-Type": "application/json"}), json={"is_visible": False})
+
+
+def log_chat(text, said, ok, spell_numbers, attempt):
+    """Every text sent to the chat and the reply that gets voiced, to check later what was read aloud."""
+    record = {"time": time.time(), "sent": text, "said": said, "passed": ok, "spell_numbers": spell_numbers,
+              "attempt": attempt}
+    try:
+        os.makedirs(os.path.dirname(CHAT_LOG), exist_ok=True)
+        with open(CHAT_LOG, "a") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as e:
+        log.warning("chat log: %s", e)
 
 
 def norm(t):
